@@ -176,6 +176,19 @@ function getBaseUrl() {
     return baseUrl;
 }
 
+function isCordovaApp() {
+    return window.location.protocol === 'file:' || window.cordova;
+}
+
+function requireBackendBaseUrl() {
+    const baseUrl = getBaseUrl();
+    if (!baseUrl && isCordovaApp()) {
+        $('#backendUrlModal').modal('show');
+        throw new Error('App 端需要先在“云端后台设置”里填写网页版服务器地址，例如 https://你的域名');
+    }
+    return baseUrl;
+}
+
 const API_CONFIG = {
     'edge-api': {
         get url() { return getBaseUrl() + '/api/tts'; }
@@ -486,7 +499,14 @@ function updateSliderLabel(sliderId, labelId) {
 
 // 后端 URL 保存功能
 function saveBackendUrl() {
-    const url = $('#backendBaseUrl').val().trim();
+    let url = $('#backendBaseUrl').val().trim();
+    if (url.endsWith('/')) {
+        url = url.slice(0, -1);
+    }
+    if (url && !/^https:\/\//i.test(url)) {
+        showError('App 端服务器地址必须以 https:// 开头');
+        return;
+    }
     localStorage.setItem('backend_base_url', url);
     $('#backendUrlModal').modal('hide');
     showInfo('后端服务器地址已保存！');
@@ -1357,6 +1377,10 @@ async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = n
 
         const bodyContent = (typeof requestBody === 'string') ? requestBody : JSON.stringify(requestBody);
 
+        if (!isCustomApi) {
+            requireBackendBaseUrl();
+        }
+
         let response;
         try {
             response = await fetch(requestUrl, {
@@ -1386,7 +1410,7 @@ async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = n
                 const azurePitch = pitchVal >= 0 ? `+${pitchVal}%` : `${pitchVal}%`;
                 const ssml = `<speak version='1.0' xml:lang='en-US'><voice xml:lang='en-US' xml:gender='Female' name='${voice}'><prosody rate='${azureRate}' pitch='${azurePitch}'>${text}</prosody></voice></speak>`;
 
-                response = await fetch('/api/azure-tts', {
+                response = await fetch(getBaseUrl() + '/api/azure-tts', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/ssml+xml',
@@ -1402,6 +1426,9 @@ async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = n
                 }
                 console.log('Azure TTS 回退成功');
             } else {
+                if (fetchError instanceof TypeError && fetchError.message === 'Failed to fetch') {
+                    throw new Error('请求云端后台失败，请检查“云端后台设置”的地址是否正确、是否包含 https://，以及服务器是否允许跨域访问。');
+                }
                 throw fetchError;
             }
         }
