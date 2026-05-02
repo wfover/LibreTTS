@@ -26,6 +26,11 @@ jobs:
         with:
           gradle-version: '7.6.3'
 
+      - name: Install Android SDK build tools
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-33" "build-tools;33.0.2"
+
       - name: Install Cordova
         run: npm install -g cordova
 
