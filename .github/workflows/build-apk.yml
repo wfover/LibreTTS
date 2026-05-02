@@ -21,6 +21,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '7.6.3'
+
       - name: Install Cordova
         run: npm install -g cordova
 
