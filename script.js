@@ -159,6 +159,7 @@ async function restoreState() {
                 if (wasPlaying) {
                     audioEl.play().catch(() => {});
                 }
+                audioEl.onloadedmetadata = null;
             };
         }
     } catch (e) {
@@ -1179,6 +1180,7 @@ async function generateVoice(isPreview, autoPlay = false) {
                     if (autoPlay) {
                         const audioEl = $('#audio')[0];
                         if (audioEl) {
+                            audioEl.currentTime = 0;
                             audioEl.play().catch(() => {
                                 showInfo('音频已生成，若未自动播放请点击播放器播放');
                             });
@@ -1983,6 +1985,8 @@ async function generateVoiceForLongText(segments, currentRequestId, currentSpeak
                             showInfo('完整音频已生成，若未自动播放请点击播放器播放');
                         });
                     }
+                    
+                    audioEl.onloadedmetadata = null;
                 };
             }
 
