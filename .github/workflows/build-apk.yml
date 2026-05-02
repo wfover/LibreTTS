@@ -26,6 +26,9 @@ jobs:
         with:
           gradle-version: '7.6.3'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android SDK build tools
         run: |
           yes | sdkmanager --licenses
