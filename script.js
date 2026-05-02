@@ -167,12 +167,21 @@ async function restoreState() {
     }
 }
 
+// 获取后端基础 URL
+function getBaseUrl() {
+    let baseUrl = localStorage.getItem('backend_base_url') || '';
+    if (baseUrl && baseUrl.endsWith('/')) {
+        baseUrl = baseUrl.slice(0, -1);
+    }
+    return baseUrl;
+}
+
 const API_CONFIG = {
     'edge-api': {
-        url: '/api/tts'
+        get url() { return getBaseUrl() + '/api/tts'; }
     },
     'azure-tts-1': {
-        url: '/api/azure-tts', // 使用后端转发
+        get url() { return getBaseUrl() + '/api/azure-tts'; }, // 使用后端转发
         format: 'azure-ssml'   // 标记为 Azure SSML 格式，以便区分处理
     }
 };
@@ -475,7 +484,18 @@ function updateSliderLabel(sliderId, labelId) {
     });
 }
 
+// 后端 URL 保存功能
+function saveBackendUrl() {
+    const url = $('#backendBaseUrl').val().trim();
+    localStorage.setItem('backend_base_url', url);
+    $('#backendUrlModal').modal('hide');
+    showInfo('后端服务器地址已保存！');
+}
+
 $(document).ready(function() {
+    // 恢复后端 URL 设置
+    $('#backendBaseUrl').val(localStorage.getItem('backend_base_url') || '');
+
     // 确保默认API选择为edge-api
     if ($('#api').length && !$('#api').val()) {
         $('#api').val('edge-api');
