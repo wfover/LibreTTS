@@ -677,23 +677,32 @@ select.form-control {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
-    align-items: end;
+    align-items: center;
 }
 
 .voice-setting-item {
     margin-bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
 }
 
 .voice-setting-label {
     display: block;
-    margin-bottom: 0.35rem;
+    margin-bottom: 0;
     font-weight: 600;
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .voice-setting-input.form-control {
-    height: 44px;
-    padding-top: 0.55rem;
-    padding-bottom: 0.55rem;
+    width: 96px;
+    min-width: 0;
+    flex: 0 0 96px;
+    height: 40px;
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
 }
 
 /* 响应式改进 */
@@ -732,8 +741,14 @@ select.form-control {
         gap: 10px;
     }
 
-    .voice-setting-label {
-        margin-bottom: 0.25rem;
+    .voice-setting-item {
+        gap: 6px;
+    }
+
+    .voice-setting-input.form-control {
+        width: 82px;
+        flex-basis: 82px;
+        height: 38px;
     }
 }
 
