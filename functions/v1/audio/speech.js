@@ -313,10 +313,13 @@ function stripMarkdown(input) {
   text = text.replace(/\\([*_`\[\]()>#+\-])/g, '$1');
   // 11) 剩余孤立 Markdown 符号清理（避免误删 HTML/比较符号，不处理 '>'）
   text = text.replace(/[#*_`]+/g, '');
-  // 12) 多空白合并
+  // 12) 清理 emoji / icon（含 keycap、旗帜、ZWJ 组合）
+  text = text.replace(/(?:[#*0-9]️?⃣|[\u{1F1E6}-\u{1F1FF}]{2}|(?:\p{Extended_Pictographic}(?:︎|️)?(?:\p{Emoji_Modifier})?(?:‍\p{Extended_Pictographic}(?:︎|️)?(?:\p{Emoji_Modifier})?)*))/gu, '');
+  text = text.replace(/[‍︎️]/g, '');
+  // 13) 多空白合并
   text = text.replace(/[\t\f\v]+/g, ' ');
   text = text.replace(/\s{2,}/g, ' ');
-  // 13) 多个空行压缩
+  // 14) 多个空行压缩
   text = text.replace(/\n{3,}/g, '\n\n');
   
   return text.trim();
