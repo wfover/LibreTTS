@@ -189,14 +189,16 @@
                             </div>
 
                             <!-- 其他API使用的语速语调设置 -->
-                            <div id="rateContainer" class="form-group">
-                                <label for="rate">语速: <span id="rateValue">0</span></label>
-                                <input type="range" class="form-control-range" id="rate" name="rate" min="-100" max="100" value="0">
-                            </div>
+                            <div id="voiceSettingsRow" class="form-group voice-settings-row">
+                                <div id="rateContainer" class="voice-setting-item">
+                                    <label for="rate" class="voice-setting-label">语速</label>
+                                    <input type="number" class="form-control voice-setting-input" id="rate" name="rate" min="-100" max="100" step="1" value="0" placeholder="0">
+                                </div>
 
-                            <div id="pitchContainer" class="form-group">
-                                <label for="pitch">语调: <span id="pitchValue">0</span></label>
-                                <input type="range" class="form-control-range" id="pitch" name="pitch" min="-100" max="100" value="0">
+                                <div id="pitchContainer" class="voice-setting-item">
+                                    <label for="pitch" class="voice-setting-label">语调</label>
+                                    <input type="number" class="form-control voice-setting-input" id="pitch" name="pitch" min="-100" max="100" step="1" value="0" placeholder="0">
+                                </div>
                             </div>
 
                             <div id="error" class="alert alert-danger" style="display: none;"></div>

@@ -452,12 +452,12 @@ function updateApiTipsText(apiName) {
     if (customAPIs[apiName] && customAPIs[apiName].format === 'openai') {
         $('#instructionsContainer').show();
         $('#formatContainer').show();
-        $('#rateContainer, #pitchContainer').hide();
+        $('#voiceSettingsRow').hide();
         $('#pauseControls').hide(); // 隐藏停顿控制
     } else {
         $('#instructionsContainer').hide();
         $('#formatContainer').hide();
-        $('#rateContainer, #pitchContainer').show();
+        $('#voiceSettingsRow').show();
         $('#pauseControls').show(); // 显示停顿控制
     }
 
@@ -490,14 +490,10 @@ function updateApiTipsText(apiName) {
     }
 }
 
-function updateSliderLabel(sliderId, labelId) {
-    const slider = $(`#${sliderId}`);
-    const label = $(`#${labelId}`);
-    label.text(slider.val());
-    
-    slider.off('input').on('input', function() {
-        label.text(this.value);
-    });
+function normalizeVoiceSettingValue(value) {
+    const parsed = parseInt(value, 10);
+    if (Number.isNaN(parsed)) return 0;
+    return Math.max(-100, Math.min(100, parsed));
 }
 
 // 后端 URL 保存功能
@@ -540,8 +536,6 @@ $(document).ready(function() {
             updateSpeakerOptions(apiName);
             
             $('#rate, #pitch').val(0);
-            updateSliderLabel('rate', 'rateValue');
-            updateSliderLabel('pitch', 'pitchValue');
             
             // 根据选择的API更新提示信息
             const tips = {
@@ -554,7 +548,7 @@ $(document).ready(function() {
             if (customAPIs[apiName] && customAPIs[apiName].format === 'openai') {
                 $('#instructionsContainer').show();
                 $('#formatContainer').show();
-                $('#rateContainer, #pitchContainer').hide();
+                $('#voiceSettingsRow').hide();
                 $('#pauseControls').hide(); // 隐藏停顿控制
 
                 // 更新字符限制提示文本
@@ -562,7 +556,7 @@ $(document).ready(function() {
             } else {
                 $('#instructionsContainer').hide();
                 $('#formatContainer').hide();
-                $('#rateContainer, #pitchContainer').show();
+                $('#voiceSettingsRow').show();
                 $('#pauseControls').show(); // 显示停顿控制
 
                 // 恢复默认字符限制提示文本
@@ -570,8 +564,15 @@ $(document).ready(function() {
             }
         });
 
-        updateSliderLabel('rate', 'rateValue');
-        updateSliderLabel('pitch', 'pitchValue');
+        $('#rate, #pitch').on('input blur', function(event) {
+            if (this.value === '') {
+                if (event.type === 'blur') {
+                    this.value = 0;
+                }
+                return;
+            }
+            this.value = normalizeVoiceSettingValue(this.value);
+        });
 
         $('#speaker').on('change', function() {
             const apiName = $('#api').val();
