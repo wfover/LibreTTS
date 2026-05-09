@@ -130,8 +130,8 @@ function stripMarkdown(input) {
   text = text.replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi, '');
   // 8) 引用行 >
   text = text.replace(/^\s*>+\s?/gm, '');
-  // 9) 水平线 --- *** ___
-  text = text.replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, '');
+  // 9) 分隔线：连续 3 个及以上相同分隔符
+  text = text.replace(/^\s*([*\-=+_])\1{2,}\s*$/gm, '');
   // 10) 转义反斜杠 \\*
   text = text.replace(/\\([*_`\[\]()>#+\-])/g, '$1');
   // 11) 剩余孤立 Markdown 符号清理（避免误删 HTML/比较符号，不处理 '>'）
