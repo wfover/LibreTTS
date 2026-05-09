@@ -5,12 +5,18 @@ let requestCounter = 0;
 let isGenerating = false;
 // Abort controller for cancellable generation requests
 let currentAbortController = null;
+let currentAbortControllers = [];
+let longTextTaskId = 0;
 let cancelRequested = false;
 // Sequential playback queue for long-text generation
 let playbackQueue = [];
 let isQueuePlaying = false;
 let queueModeActive = false;
 let isLongTextGenerating = false;
+
+function isAbortError(error) {
+    return error && (error.name === 'AbortError' || String(error.message || '').toLowerCase().includes('abort'));
+}
 
 // 清理 Markdown 标记与链接，避免被朗读
 function stripMarkdown(input) {
@@ -660,9 +666,14 @@ $(document).ready(function() {
         // 如果正在生成，则点击为"停止"行为，并立即恢复按钮初始状态
         if (isGenerating) {
             cancelRequested = true;
+            longTextTaskId++;
             if (currentAbortController) {
                 try { currentAbortController.abort(); } catch (e) {}
             }
+            currentAbortControllers.forEach(controller => {
+                try { controller.abort(); } catch (e) {}
+            });
+            currentAbortControllers = [];
             queueModeActive = false;
             // 清空播放队列并停止当前播放
             try {
@@ -676,6 +687,8 @@ $(document).ready(function() {
             }
             hideLoading();
             isGenerating = false;
+            isLongTextGenerating = false;
+            currentAbortController = null;
             // 恢复按钮为"生成并播放"
             const orig = $btn.data('origHtml');
             $btn.html(orig || '<i class="fas fa-play-circle mr-2"></i>生成并播放');
@@ -1183,7 +1196,7 @@ async function generateVoice(isPreview, autoPlay = false) {
     $('#previewButton').prop('disabled', true);
 
     // 处理长文本（基于清理后的文本分段）
-    const segments = splitText(text);
+    const segments = splitText(text, { maxSegment: getLongTextTargetSegmentLength(apiName, autoPlay) });
     requestCounter++;
     const currentRequestId = requestCounter;
     
@@ -1193,8 +1206,14 @@ async function generateVoice(isPreview, autoPlay = false) {
         queueModeActive = !!autoPlay;
         playbackQueue = [];
         isQueuePlaying = false;
+        const generationTaskId = longTextTaskId + 1;
         showLoading(`正在生成#${currentRequestId}请求的 1/${segments.length} 段语音...`);
-        generateVoiceForLongText(segments, currentRequestId, currentSpeakerText, currentSpeakerId, apiUrl, apiName, autoPlay).finally(() => {
+        generateVoiceForLongText(segments, currentRequestId, currentSpeakerText, currentSpeakerId, apiUrl, apiName, autoPlay).catch(error => {
+            if (!isAbortError(error) && error.message !== '已停止生成' && !error._libreTTSShown) {
+                showError(error.message);
+            }
+        }).finally(() => {
+            if (longTextTaskId !== generationTaskId) return;
             hideLoading();
             isGenerating = false;  // 重置生成状态
             $('#generateButton').prop('disabled', false);
@@ -1273,11 +1292,13 @@ function escapeXml(text) {
     return tempText;
 }
 
-async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = null) {
+async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = null, options = {}) {
     try {
-        // 每次请求创建新的 AbortController，以支持中止
-        currentAbortController = new AbortController();
-        const signal = currentAbortController.signal;
+        let signal = options.signal;
+        if (!signal) {
+            currentAbortController = new AbortController();
+            signal = currentAbortController.signal;
+        }
         // 获取当前API类型
         const apiName = $('#api').val();
         const customApi = customAPIs[apiName];
@@ -1466,7 +1487,9 @@ async function makeRequest(url, isPreview, text, requestInfo = '', speakerId = n
         return blob;
     } catch (error) {
             console.error('请求错误:', error);
-            showError(error.message);
+            if (!isAbortError(error) && !options.silentErrors) {
+                showError(error.message);
+            }
             throw error;
     }
 }
@@ -1739,9 +1762,27 @@ function getApiLimits(apiName) {
     }
 }
 
-function splitText(text) {
+function getApiFormat(apiName) {
+    return customAPIs[apiName] ? (customAPIs[apiName].format || 'openai') : (API_CONFIG[apiName]?.format || 'edge');
+}
+
+function getTTSConcurrency(apiName) {
+    const apiFormat = getApiFormat(apiName);
+    if (apiFormat === 'azure-ssml') return 1;
+    return 2;
+}
+
+function getLongTextTargetSegmentLength(apiName, autoPlay) {
+    const apiFormat = getApiFormat(apiName);
+    if (apiFormat === 'openai') return 260;
+    if (apiFormat === 'azure-ssml') return 1200;
+    return autoPlay ? 800 : 1200;
+}
+
+function splitText(text, options = {}) {
     const apiName = $('#api').val();
     const { maxSegment } = getApiLimits(apiName);
+    const effectiveMaxSegment = options.maxSegment || maxSegment;
     const segments = [];
     let remainingText = text.trim();
 
@@ -1817,7 +1858,7 @@ function splitText(text) {
         for (let i = 0; i < remainingText.length; i++) {
             currentLength += remainingText.charCodeAt(i) > 127 ? 2 : 1;
             
-            if (currentLength > maxSegment) {
+            if (currentLength > effectiveMaxSegment) {
                 splitIndex = i;
                 // 先遍历优先级组
                 for (let priority = 0; priority < punctuationGroups.length; priority++) {
@@ -1893,150 +1934,238 @@ function updateLoadingProgress(progress, message) {
 }
 
 async function generateVoiceForLongText(segments, currentRequestId, currentSpeakerText, currentSpeakerId, apiUrl, apiName, autoPlay = false) {
-    const results = [];
+    const taskId = ++longTextTaskId;
     const totalSegments = segments.length;
-    
-    // 获取原始文本，先去除Markdown/链接，再清理 SSML 标签，用于合并后的历史展示
+    const results = new Array(totalSegments);
+    const readyBlobs = new Map();
+    const concurrency = getTTSConcurrency(apiName);
+    const MAX_RETRIES = 3;
+    const retryDelays = [1500, 3000, 5000];
+
     const originalText = $('#text').val();
     const cleanForTTS = stripMarkdown(originalText);
     const cleanText = cleanForTTS.replace(/<break\s+time=["'](\d+(?:\.\d+)?[ms]s?)["']\s*\/>/g, '');
     const shortenedText = cleanText.length > 7 ? cleanText.substring(0, 7) + '...' : cleanText;
-    
-    showLoading('');
-    
-    let hasSuccessfulSegment = false;
-    const MAX_RETRIES = 3;
 
-    for (let i = 0; i < segments.length; i++) {
-        if (cancelRequested) {
-            console.warn('用户取消生成');
-            break;
+    showLoading('');
+    currentAbortControllers = [];
+
+    let nextSegmentToRequest = 0;
+    let nextSegmentToPlay = 0;
+    let activeRequests = 0;
+    let completedRequests = 0;
+    let hasSuccessfulSegment = false;
+    let failed = false;
+    let fatalError = null;
+
+    const isCurrentTask = () => taskId === longTextTaskId && !cancelRequested;
+
+    const abortActiveRequests = () => {
+        currentAbortControllers.forEach(controller => {
+            try { controller.abort(); } catch (e) {}
+        });
+        currentAbortControllers = [];
+    };
+
+    const updateProgress = (messageSuffix = '') => {
+        const progress = totalSegments ? ((completedRequests / totalSegments) * 100).toFixed(1) : 100;
+        updateLoadingProgress(
+            progress,
+            `正在生成#${currentRequestId}请求的 ${completedRequests}/${totalSegments} 段语音，进行中 ${activeRequests} 个${messageSuffix}...`
+        );
+    };
+
+    const flushReadyBlobs = () => {
+        if (!isCurrentTask() || failed) return;
+
+        while (readyBlobs.has(nextSegmentToPlay)) {
+            const blob = readyBlobs.get(nextSegmentToPlay);
+            readyBlobs.delete(nextSegmentToPlay);
+
+            if (autoPlay && queueModeActive && !cancelRequested) {
+                const audioURL = URL.createObjectURL(blob);
+                playbackQueue.push(audioURL);
+                if (!isQueuePlaying) {
+                    playQueueNext();
+                }
+            }
+
+            nextSegmentToPlay++;
         }
+    };
+
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    const requestSegment = async (index) => {
         let retryCount = 0;
-        let success = false;
         let lastError = null;
 
-        while (retryCount < MAX_RETRIES && !success) {
-            try {
-                const progress = ((i + 1) / totalSegments * 100).toFixed(1);
-                const retryInfo = retryCount > 0 ? `(重试 ${retryCount}/${MAX_RETRIES})` : '';
-                updateLoadingProgress(
-                    progress, 
-                    `正在生成#${currentRequestId}请求的 ${i + 1}/${totalSegments} 段语音${retryInfo}...`
-                );
-                
-                // 为自定义API (format=openai) 使用相同的instructions
-                let instructions = null;
-                if (customAPIs[apiName] && customAPIs[apiName].format === 'openai') {
-                    instructions = $('#instructions').val().trim();
-                }
-                
-                const requestInfo = `#${currentRequestId}(${i + 1}/${totalSegments})`;
-                
-                const blob = await makeRequest(
-                    apiUrl, 
-                    false, 
-                    segments[i], 
-                    requestInfo,  // 传递requestInfo而不是把它用作voice参数
-                    currentSpeakerId  // 确保这是正确的speaker ID
-                );
-                
-                if (blob) {
-                    hasSuccessfulSegment = true;
-                    success = true;
-                    results.push(blob);
-                    const timestamp = new Date().toLocaleTimeString();
-                    // 使用传入的讲述人名称，而不是重新获取
-                    const cleanSegmentText = segments[i].replace(/<break\s+time=["'](\d+(?:\.\d+)?[ms]s?)["']\s*\/>/g, '');
-                    const shortenedSegmentText = cleanSegmentText.length > 7 ? cleanSegmentText.substring(0, 7) + '...' : cleanSegmentText;
-                    const requestInfo = `#${currentRequestId}(${i + 1}/${totalSegments})`;
-                    addHistoryItem(timestamp, currentSpeakerText, shortenedSegmentText, blob, requestInfo);
+        while (retryCount < MAX_RETRIES) {
+            if (!isCurrentTask()) {
+                throw new Error('已停止生成');
+            }
 
-                    // 若启用自动播放，按段落依次播放
-                    if (autoPlay && queueModeActive && !cancelRequested) {
-                        const audioURL = URL.createObjectURL(blob);
-                        playbackQueue.push(audioURL);
-                        // 如果音频仍在播放，则不打断；在 onended 或下一次检查时接续
-                        if (!isQueuePlaying) {
-                            playQueueNext();
-                        }
-                    }
-                }
+            const controller = new AbortController();
+            currentAbortControllers.push(controller);
+
+            try {
+                const requestInfo = `#${currentRequestId}(${index + 1}/${totalSegments})`;
+                const blob = await makeRequest(
+                    apiUrl,
+                    false,
+                    segments[index],
+                    requestInfo,
+                    currentSpeakerId,
+                    { signal: controller.signal, silentErrors: true }
+                );
+                return blob;
             } catch (error) {
                 lastError = error;
-                retryCount++;
-                
-                if (retryCount < MAX_RETRIES) {
-                    console.error(`分段 ${i + 1} 生成失败 (重试 ${retryCount}/${MAX_RETRIES}):`, error);
-                    const waitTime = 3000 + (retryCount * 2000);
-                    await new Promise(resolve => setTimeout(resolve, waitTime));
-                } else {
-                    showError(`第 ${i + 1}/${totalSegments} 段生成失败：${error.message}`);
+                if (isAbortError(error) || !isCurrentTask()) {
+                    throw error;
                 }
+
+                retryCount++;
+                if (retryCount >= MAX_RETRIES) {
+                    throw error;
+                }
+
+                console.error(`分段 ${index + 1} 生成失败 (重试 ${retryCount}/${MAX_RETRIES}):`, error);
+                updateProgress(`，第 ${index + 1} 段重试 ${retryCount}/${MAX_RETRIES}`);
+                await wait(retryDelays[Math.min(retryCount - 1, retryDelays.length - 1)]);
+            } finally {
+                currentAbortControllers = currentAbortControllers.filter(item => item !== controller);
             }
         }
 
-        if (!success) {
-            console.error(`分段 ${i + 1} 在 ${MAX_RETRIES} 次尝试后仍然失败:`, lastError);
-        }
+        throw lastError || new Error('语音生成失败');
+    };
 
-        if (!cancelRequested && success && i < segments.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 3000));
-        }
-    }
+    await new Promise(resolve => {
+        const finishWithFailure = (error, index) => {
+            if (failed) return;
+            failed = true;
+            fatalError = error;
+            if (!isAbortError(error) && isCurrentTask()) {
+                showError(`第 ${index + 1}/${totalSegments} 段生成失败：${error.message}`);
+                error._libreTTSShown = true;
+            }
+            abortActiveRequests();
+            resolve();
+        };
+
+        const runNextSegment = () => {
+            while (!failed && isCurrentTask() && activeRequests < concurrency && nextSegmentToRequest < totalSegments) {
+                const index = nextSegmentToRequest;
+                nextSegmentToRequest++;
+                activeRequests++;
+                updateProgress();
+
+                requestSegment(index)
+                    .then(blob => {
+                        if (!blob || !isCurrentTask() || failed) return;
+
+                        hasSuccessfulSegment = true;
+                        results[index] = blob;
+
+                        const timestamp = new Date().toLocaleTimeString();
+                        const cleanSegmentText = segments[index].replace(/<break\s+time=["'](\d+(?:\.\d+)?[ms]s?)["']\s*\/>/g, '');
+                        const shortenedSegmentText = cleanSegmentText.length > 7 ? cleanSegmentText.substring(0, 7) + '...' : cleanSegmentText;
+                        const requestInfo = `#${currentRequestId}(${index + 1}/${totalSegments})`;
+                        addHistoryItem(timestamp, currentSpeakerText, shortenedSegmentText, blob, requestInfo);
+
+                        readyBlobs.set(index, blob);
+                        flushReadyBlobs();
+                    })
+                    .catch(error => {
+                        if (cancelRequested || taskId !== longTextTaskId || isAbortError(error)) {
+                            fatalError = error;
+                            resolve();
+                            return;
+                        }
+                        console.error(`分段 ${index + 1} 在 ${MAX_RETRIES} 次尝试后仍然失败:`, error);
+                        finishWithFailure(error, index);
+                    })
+                    .finally(() => {
+                        activeRequests--;
+                        completedRequests++;
+
+                        if (failed || cancelRequested || taskId !== longTextTaskId) {
+                            resolve();
+                            return;
+                        }
+
+                        updateProgress();
+                        flushReadyBlobs();
+
+                        if (completedRequests >= totalSegments) {
+                            resolve();
+                        } else {
+                            runNextSegment();
+                        }
+                    });
+            }
+        };
+
+        updateProgress();
+        runNextSegment();
+    });
 
     hideLoading();
 
-    if (results.length > 0) {
-        // 合并整段用于下载与持久化
-        const finalBlob = new Blob(results, { type: 'audio/mpeg' });
+    if (taskId === longTextTaskId) {
+        currentAbortControllers = [];
+    }
+
+    if (cancelRequested || taskId !== longTextTaskId) {
+        throw new Error('已停止生成');
+    }
+
+    if (failed && fatalError) {
+        throw fatalError;
+    }
+
+    const orderedResults = results.filter(Boolean);
+    if (hasSuccessfulSegment && orderedResults.length === totalSegments) {
+        const finalBlob = new Blob(orderedResults, { type: 'audio/mpeg' });
         const timestamp = new Date().toLocaleTimeString();
         const mergeRequestInfo = `#${currentRequestId}(合并)`;
         addHistoryItem(timestamp, currentSpeakerText, shortenedText, finalBlob, mergeRequestInfo);
-        // 在长文本合并完成后持久化整体音频，供下次恢复
         persistAudio(finalBlob);
 
-        // 更新播放器为合成的完整音频
         if (autoPlay) {
-            // 停止当前队列播放
             queueModeActive = false;
             isQueuePlaying = false;
 
-            // 清理播放队列
             playbackQueue.forEach(url => URL.revokeObjectURL(url));
             playbackQueue = [];
 
-            // 获取当前播放位置
             const audioEl = $('#audio')[0];
             const currentTime = audioEl ? audioEl.currentTime : 0;
             const wasPlaying = audioEl ? !audioEl.paused : false;
 
-            // 更新播放器音频源
             if (currentAudioURL) URL.revokeObjectURL(currentAudioURL);
             currentAudioURL = URL.createObjectURL(finalBlob);
             $('#result').show();
             $('#audio').attr('src', currentAudioURL);
             $('#download').removeClass('disabled').attr('href', currentAudioURL);
 
-            // 设置下载文件名
-            const apiFormat = (API_CONFIG[apiName] && API_CONFIG[apiName].format === 'openai') ? $('#audioFormat').val() : 'mp3';
-            $('#download').attr('download', `voice.${apiFormat}`);
+            const apiFormat = getApiFormat(apiName);
+            const audioFormat = apiFormat === 'openai' ? $('#audioFormat').val() : 'mp3';
+            $('#download').attr('download', `voice.${audioFormat}`);
 
-            // 等待音频加载完成后恢复播放位置并继续播放
             if (audioEl) {
                 audioEl.onloadedmetadata = function() {
-                    // 恢复播放位置
                     if (currentTime > 0 && currentTime < audioEl.duration) {
                         audioEl.currentTime = currentTime;
                     }
 
-                    // 如果之前正在播放，继续播放
                     if (wasPlaying) {
                         audioEl.play().catch(() => {
                             showInfo('完整音频已生成，若未自动播放请点击播放器播放');
                         });
                     }
-                    
+
                     audioEl.onloadedmetadata = null;
                 };
             }
@@ -2047,9 +2176,6 @@ async function generateVoiceForLongText(segments, currentRequestId, currentSpeak
         return finalBlob;
     }
 
-    if (cancelRequested) {
-        throw new Error('已停止生成');
-    }
     throw new Error('所有片段生成失败');
 }
 
